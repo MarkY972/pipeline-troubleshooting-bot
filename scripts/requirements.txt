@@ -1,0 +1,6 @@
+# This file lists the Python package dependencies for the scripts in this directory.
+# Add packages here as they are introduced, e.g.:
+# openai
+# slack_sdk
+
+# For now, log_parser.py only uses standard libraries (argparse, json, os).

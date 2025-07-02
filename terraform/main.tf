@@ -1,74 +1,69 @@
-# Main Terraform configuration for the EKS (Elastic Kubernetes Service) cluster.
-# This file defines the EKS cluster itself using the terraform-aws-modules/eks/aws module.
-# It depends on the VPC created in vpc.tf.
-#
-# Note: This configuration is intended for demonstrating the CI/CD pipeline structure
-# and AI troubleshooting. It defines resources but the pipeline is set up for
-# `terraform plan` only, not `terraform apply` (actual deployment).
+# Root Terraform configuration for the Intelligent CI/CD Pipeline Troubleshooting Assistant project.
+# This file orchestrates the deployment of network and EKS cluster resources
+# by calling local modules defined in the `modules/` directory.
 
 provider "aws" {
   region = var.aws_region
 }
 
-# Placeholder for EKS cluster resources
-# We will use the terraform-aws-modules/eks/aws module
+data "aws_availability_zones" "available" {
+  # This data source is used to get a list of available AZs in the selected region.
+  # It's good practice to use this to make the configuration more resilient to AZ changes.
+  # Filter for zones that are currently available and not in an impaired state.
+  filter {
+    name   = "opt-in-status"
+    values = ["opt-in-not-required"] # For regions where all AZs are enabled by default
+  }
+  filter {
+    name   = "state"
+    values = ["available"]
+  }
+}
 
-module "eks" {
-  source  = "terraform-aws-modules/eks/aws"
-  version = "19.15.3" # Specify a version for consistency
+module "network" {
+  source = "./modules/network" # Path to the local network module
+
+  vpc_name           = "${var.project_name}-vpc"
+  cluster_name_tag   = var.cluster_name # For tagging subnets correctly for EKS
+  vpc_cidr           = var.vpc_cidr
+  azs                = slice(data.aws_availability_zones.available.names, 0, var.num_azs) # Use a configurable number of AZs
+  public_subnet_cidrs= var.public_subnet_cidrs
+  private_subnet_cidrs= var.private_subnet_cidrs
+
+  enable_nat_gateway   = true
+  single_nat_gateway   = true # Keep true for demo/cost, can be parameterized
+  enable_dns_hostnames = true
+
+  common_tags = var.common_tags
+}
+
+module "eks_cluster" {
+  source = "./modules/eks_cluster" # Path to the local EKS module
 
   cluster_name    = var.cluster_name
   cluster_version = var.eks_version
 
-  vpc_id     = module.vpc.vpc_id
-  subnet_ids = module.vpc.private_subnets # EKS best practice: control plane in private subnets
+  vpc_id     = module.network.vpc_id
+  subnet_ids = module.network.private_subnet_ids # Deploy EKS nodes into private subnets
 
   eks_managed_node_groups = {
-    default = {
-      instance_type = var.instance_type
-      min_size      = var.min_capacity
-      max_size      = var.max_capacity
-      desired_size  = var.desired_capacity
-
-      # Additional configurations can be added here
-      # e.g., disk_size, ami_type, labels, taints
-      tags = {
-        TerraformManaged = "true"
-      }
+    default_group = { # Example node group
+      instance_types = var.node_instance_types
+      min_size       = var.node_min_capacity
+      max_size       = var.node_max_capacity
+      desired_size   = var.node_desired_capacity
+      disk_size      = 20 # GB
+      ami_type       = "AL2_x86_64" # Amazon Linux 2
+      labels         = { "nodegroup-type" = "default" }
+      tags           = { "NodeGroup" = "Default" }
     }
+    # Add more node groups here if needed
   }
 
-  # Required for cluster communication with worker nodes
-  # and for kubectl access if you were to deploy this.
   manage_aws_auth_configmap = true
+  aws_auth_roles            = var.aws_auth_roles # Pass roles for aws-auth configmap
+  # aws_auth_users         = [] # Define if needed
+  # aws_auth_accounts      = [] # Define if needed
 
-  aws_auth_roles = [
-    # You can add IAM roles here that should have access to the cluster
-    # Example:
-    # {
-    #   rolearn  = "arn:aws:iam::ACCOUNT_ID:role/YourAdminRole"
-    #   username = "admin"
-    #   groups   = ["system:masters"]
-    # }
-  ]
-
-  tags = {
-    Environment = "dev"
-    Project     = "eks-troubleshooting-assistant"
-  }
-}
-
-output "cluster_endpoint" {
-  description = "Endpoint for EKS control plane."
-  value       = module.eks.cluster_endpoint
-}
-
-output "cluster_name" {
-  description = "Kubernetes Cluster Name."
-  value       = module.eks.cluster_name
-}
-
-output "cluster_oidc_issuer_url" {
-  description = "The OIDC issuer URL for the EKS cluster"
-  value       = module.eks.cluster_oidc_issuer_url
+  common_tags = var.common_tags
 }

@@ -17,11 +17,16 @@ The goal of this project is to create a GitHub Action that uses an AI-powered as
 
 - `.github/workflows/main.yml`: The main GitHub Actions workflow.
 - `scripts/log_parser.py`: Python script for log analysis and AI interaction.
+- `scripts/requirements.txt`: Python dependencies for scripts.
 - `terraform/`: Directory containing Terraform configurations for AWS EKS.
-    - `main.tf`: EKS cluster definition.
-    - `vpc.tf`: VPC definition.
-    - `variables.tf`: Terraform variables.
-    - `outputs.tf`: Terraform outputs.
+    - `README.md`: Detailed explanation of the Terraform setup, usage, and structure.
+    - `versions.tf`: Specifies required Terraform and provider versions.
+    - `main.tf` (root): Orchestrates calls to local modules.
+    - `variables.tf` (root): Input variables for the entire Terraform configuration.
+    - `outputs.tf` (root): Outputs from the entire Terraform configuration.
+    - `modules/`: Contains local, reusable modules.
+        - `network/`: Local module for VPC and networking resources. Wraps the public `terraform-aws-modules/vpc/aws` module. Contains its own `main.tf`, `variables.tf`, `outputs.tf`.
+        - `eks_cluster/`: Local module for EKS cluster resources. Wraps the public `terraform-aws-modules/eks/aws` module. Contains its own `main.tf`, `variables.tf`, `outputs.tf`.
 
 ## Development Guidelines
 
@@ -34,19 +39,21 @@ The goal of this project is to create a GitHub Action that uses an AI-powered as
     4. Refine the prompts sent to the OpenAI API in `analyze_logs_with_ai` for better accuracy and more specific suggestions. Consider different prompts for different types of errors (Terraform, application, build).
 
 ### 2. Terraform Deployment (Future - Optional)
-- The pipeline currently only runs `terraform plan`.
+- The pipeline currently only runs `terraform plan` using the configurations in `terraform/`.
+- The Terraform code is structured using local modules (`modules/network` and `modules/eks_cluster`) called by the root module. Refer to `terraform/README.md` for details on structure and usage.
 - To enable actual deployment:
     1. **CRITICAL: Ensure AWS credentials (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION`) are securely configured as GitHub secrets.**
     2. In `.github/workflows/main.yml`, uncomment the `env` sections for AWS credentials in `Terraform Init` and `Terraform Plan` steps.
-    3. Add a `Terraform Apply` step after the `Terraform Plan` step, ensuring it only runs on specific conditions (e.g., merges to `main` branch, manual approval).
+    3. Add a `Terraform Apply` step after the `Terraform Plan` step in `.github/workflows/main.yml`, ensuring it only runs on specific conditions (e.g., merges to `main` branch, manual approval).
        ```yaml
+       # Example Terraform Apply step in GitHub Actions:
        - name: Terraform Apply
          if: github.ref == 'refs/heads/main' && github.event_name == 'push' # Example condition
          run: terraform -chdir=./terraform apply -auto-approve -no-color
          env:
            AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
            AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-           AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION }} # Or use var.aws_region from tfvars
+           AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION }} # Or reference var.aws_region if set via tfvars
        ```
     4. **Thoroughly test the Terraform apply process in a non-production environment first.**
 
@@ -55,9 +62,9 @@ The goal of this project is to create a GitHub Action that uses an AI-powered as
 - **For PR Comments:**
     - Use an action like `peter-evans/create-or-update-comment`.
     - Ensure the `GITHUB_TOKEN` has `pull-requests: write` permissions.
-    - The `log_parser.py` script needs to output its suggestion in a way that can be captured by `::set-output` (e.g., printing only the suggestion or using a specific format).
+    - The `log_parser.py` script's output needs to be captured. The GitHub Actions workflow (`.github/workflows/main.yml`) has comments on how to set step outputs (e.g., `echo "suggestion=value" >> $GITHUB_OUTPUT`) which can then be consumed by the PR comment action.
 - **For Slack Messages:**
-    - Install `slack_sdk` in the Python environment.
+    - Add `slack_sdk` to `scripts/requirements.txt` and ensure it's installed in the workflow.
     - Configure `SLACK_BOT_TOKEN` and `SLACK_CHANNEL_ID` as GitHub secrets.
     - Implement the Slack sending logic in `log_parser.py` or a separate script.
 
@@ -68,7 +75,7 @@ The goal of this project is to create a GitHub Action that uses an AI-powered as
     - Consider having critical scripts explicitly write their detailed logs to a file upon failure, which can then be picked up by the `log_parser.py` script.
 
 ### 5. Testing
-- **Unit Tests for Python script:** Add unit tests for `log_parser.py` functions, especially if enhancing parsing logic or AI interaction. Use `unittest` or `pytest`.
+ - **Unit Tests for Python script:** Add unit tests for `log_parser.py` functions, especially if enhancing parsing logic or AI interaction. Use `unittest` or `pytest`. Ensure any new dependencies are added to `scripts/requirements.txt`.
 - **Workflow Testing:** Test the GitHub Actions workflow by intentionally causing simulated failures or (if deployment is enabled) actual Terraform errors.
 - **AI Prompt Testing:** Iteratively test and refine the prompts sent to the (mock or real) AI to improve the quality of suggestions.
 

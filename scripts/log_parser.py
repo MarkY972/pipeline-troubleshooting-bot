@@ -161,10 +161,12 @@ def main():
     print(ai_suggestion)
 
     # Placeholder for delivering suggestions (e.g., PR comment, Slack)
-    # For now, we just print. In a GitHub Action, this could be output to a step output
-    # which can then be used by another action (e.g., peter-evans/create-or-update-comment).
-    # Example GHA step output:
-    # print(f"::set-output name=ai_suggestion::{ai_suggestion}")
+    # For now, we just print. In a GitHub Action, the workflow can capture the script's
+    # standard output and set it as a step output.
+    # For example, if this script prints the suggestion to stdout, a GHA step could do:
+    #   suggestion_output=$(python scripts/log_parser.py --log-file some_log.txt)
+    #   echo "suggestion=${suggestion_output}" >> $GITHUB_OUTPUT
+    # This captured 'suggestion' output can then be used by subsequent steps.
 
     # --- Conceptual Suggestion Delivery ---
     # 1. GitHub PR Comment:
