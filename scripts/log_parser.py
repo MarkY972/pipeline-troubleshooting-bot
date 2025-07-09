@@ -17,148 +17,147 @@ Placeholder sections for actual OpenAI API calls and suggestion delivery mechani
 import os
 import json
 import argparse
+import sys # For stderr
+from openai import OpenAI, APIError, RateLimitError, AuthenticationError
 
-# Placeholder for actual OpenAI client library
 # In a real scenario: from openai import OpenAI (after pip install openai)
 
-class MockOpenAIClient:
+# Helper function for verbose printing
+def eprint(*args, **kwargs):
+    """Prints to stderr."""
+    print(*args, file=sys.stderr, **kwargs)
+
+
+def analyze_logs_with_ai(log_content: str, api_key: str, quiet: bool = False) -> str:
     """
-    A mock OpenAI client to simulate API calls without actual an API key or network requests.
+    Analyzes log content with an AI model using the OpenAI API.
+    If quiet is True, informational prints go to stderr.
     """
-    def __init__(self, api_key=None):
-        print("MockOpenAIClient initialized.")
-        if api_key:
-            print("API key provided (but not used by mock).")
+    printer = eprint if quiet else print
 
-    class Chat:
-        class Completions:
-            @staticmethod
-            def create(model, messages):
-                print(f"MockOpenAIClient.Chat.Completions.create called with model: {model}")
-                # Simulate a response based on keywords in the log
-                log_content = ""
-                for msg in messages:
-                    if msg["role"] == "user":
-                        log_content += msg["content"]
-
-                if "terraform plan" in log_content.lower() and "error" in log_content.lower():
-                    return MockOpenAIResponse("Simulated OpenAI: Detected a Terraform plan error. Suggestion: Check your Terraform configuration for syntax errors or resource misconfigurations. Ensure all required variables are set and provider versions are compatible.")
-                elif "500 Internal Server Error" in log_content:
-                    return MockOpenAIResponse("Simulated OpenAI: Detected 'Internal Server Error'. Suggestion: Review application logs on the affected server. Look for stack traces or specific error messages around the time of the failure.")
-                elif "timeout" in log_content.lower():
-                    return MockOpenAIResponse("Simulated OpenAI: Detected a timeout. Suggestion: Investigate network connectivity between services. Check for resource exhaustion (CPU, memory, network bandwidth) on the involved systems.")
-                else:
-                    return MockOpenAIResponse("Simulated OpenAI: Log analysis complete. No specific critical issues automatically detected by mock. General advice: Review logs manually for any warnings or errors.")
-
-class MockOpenAIResponse:
-    def __init__(self, content):
-        self.choices = [MockChoice(content)]
-
-class MockChoice:
-    def __init__(self, content):
-        self.message = MockMessage(content)
-
-class MockMessage:
-    def __init__(self, content):
-        self.content = content
-
-
-def analyze_logs_with_ai(log_content: str, api_key: str = None) -> str:
-    """
-    Simulates analyzing log content with an AI model.
-    In a real implementation, this function would use the OpenAI API.
-    """
-    print("\n--- AI Log Analysis ---")
+    printer("\n--- AI Log Analysis ---")
     if not log_content:
-        print("No log content provided for AI analysis.")
+        printer("No log content provided for AI analysis.")
         return "No specific suggestions: Log content was empty."
 
-    print("Log content received by AI analyzer (first 500 chars):")
-    print(log_content[:500] + "...\n" if len(log_content) > 500 else log_content)
+    if not api_key:
+        printer("Error: OPENAI_API_KEY not provided. Cannot perform AI analysis.")
+        return "AI Analysis skipped: OpenAI API key not available."
 
-    # Use the mock client
-    # client = OpenAI(api_key=api_key or os.getenv("OPENAI_API_KEY")) # Real client
-    client = MockOpenAIClient(api_key=api_key or os.getenv("OPENAI_API_KEY")) # Mock client
+    printer("Log content received by AI analyzer (first 500 chars):")
+    printer(log_content[:500] + "...\n" if len(log_content) > 500 else log_content)
+
+    client = OpenAI(api_key=api_key)
 
     try:
-        # In a real scenario, you'd craft a more sophisticated prompt
+        system_prompt = """You are an expert CI/CD Pipeline Troubleshooting Assistant. Your goal is to analyze the provided logs, identify potential errors or causes of failure, and suggest concise, actionable troubleshooting steps.
+
+Focus on:
+- Identifying specific error messages.
+- Correlating errors with common root causes for technologies like Docker, Kubernetes, Terraform, GitHub Actions, and general application build/deployment issues.
+- Providing clear, step-by-step suggestions for remediation.
+- If possible, suggest commands to run or specific files to check.
+- If the log is unclear or too short, state that more information might be needed but still try to offer general advice based on any discernible information.
+- Keep your response focused on the technical problem and its solution.
+- Please format your suggestions using Markdown. Use bullet points for actionable steps.
+"""
+
+        user_prompt_content = f"Here are the logs from a failed CI/CD pipeline step:\n\n```\n{log_content}\n```\n\nPlease analyze these logs and provide troubleshooting suggestions."
+
         prompt_messages = [
-            {"role": "system", "content": "You are an expert DevOps assistant. Analyze the following logs and provide concise, actionable troubleshooting suggestions. Focus on common root causes for CI/CD failures, Terraform errors, and application deployment issues."},
-            {"role": "user", "content": log_content}
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt_content}
         ]
 
-        response = client.Chat.Completions.create(
-            model="gpt-3.5-turbo", # or gpt-4 if available/preferred
-            messages=prompt_messages
+        printer(f"Sending request to OpenAI API with model: gpt-3.5-turbo")
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo", # Using a common, cost-effective model
+            messages=prompt_messages,
+            temperature=0.3 # Lower temperature for more focused and deterministic suggestions
         )
-        suggestion = response.choices[0].message.content
-        print("AI Suggestion (Simulated):")
-        print(suggestion)
-        return suggestion
-    except Exception as e:
-        print(f"Error during AI analysis simulation: {e}")
-        return f"Could not get AI suggestion due to an error: {e}"
 
-def parse_log_file(file_path: str) -> str:
+        suggestion = response.choices[0].message.content
+        printer("AI Suggestion (from OpenAI API):")
+        printer(suggestion) # This will go to stderr if quiet, stdout otherwise. For GHA, we print suggestion separately.
+        return suggestion
+    except AuthenticationError as e:
+        printer(f"OpenAI API Authentication Error: {e}")
+        return f"AI Analysis failed: Authentication error. Check your API key and organization ID."
+    except RateLimitError as e:
+        printer(f"OpenAI API Rate Limit Exceeded: {e}")
+        return f"AI Analysis failed: Rate limit exceeded. Please try again later or check your usage."
+    except APIError as e:
+        printer(f"OpenAI API Error: {e}")
+        return f"AI Analysis failed: An API error occurred. Status Code: {e.status_code}. Message: {e.message}"
+    except Exception as e:
+        printer(f"An unexpected error occurred during AI analysis: {e}")
+        return f"Could not get AI suggestion due to an unexpected error: {e}"
+
+def parse_log_file(file_path: str, quiet: bool = False) -> str:
     """
     Reads content from a log file.
+    If quiet is True, informational prints go to stderr.
     """
-    print(f"Attempting to read log file: {file_path}")
+    printer = eprint if quiet else print
+    printer(f"Attempting to read log file: {file_path}")
     try:
         with open(file_path, 'r') as f:
             content = f.read()
-        print(f"Successfully read {len(content)} characters from {file_path}")
+        printer(f"Successfully read {len(content)} characters from {file_path}")
         return content
     except FileNotFoundError:
-        print(f"Error: Log file not found at {file_path}")
+        printer(f"Error: Log file not found at {file_path}")
         return ""
     except Exception as e:
-        print(f"Error reading log file {file_path}: {e}")
+        printer(f"Error reading log file {file_path}: {e}")
         return ""
 
 def main():
     parser = argparse.ArgumentParser(description="Parse logs and provide AI-driven suggestions.")
     parser.add_argument("--log-file", type=str, help="Path to the log file to analyze.")
     parser.add_argument("--log-string", type=str, help="A string containing log data to analyze.")
+    parser.add_argument("--quiet", action="store_true", help="Output only the AI suggestion to stdout. All other logs go to stderr.")
 
     args = parser.parse_args()
 
     log_content_to_analyze = ""
 
     if args.log_file:
-        print(f"Log file argument provided: {args.log_file}")
-        log_content_to_analyze = parse_log_file(args.log_file)
+        eprint(f"Log file argument provided: {args.log_file}") if not args.quiet else None
+        log_content_to_analyze = parse_log_file(args.log_file, quiet=args.quiet)
     elif args.log_string:
-        print("Log string argument provided.")
+        eprint("Log string argument provided.") if not args.quiet else None
         log_content_to_analyze = args.log_string
     else:
-        print("No log file or log string provided. Simulating some default error log for demonstration.")
-        # Simulate some error log if no input is given
+        eprint("No log file or log string provided. Simulating some default error log for demonstration.") if not args.quiet else None
         simulated_errors = [
             {"timestamp": "2023-10-27T10:00:00Z", "level": "ERROR", "message": "Failed to connect to database", "service": "auth-service"},
             {"timestamp": "2023-10-27T10:00:05Z", "level": "ERROR", "message": "NullPointerException in UserServlet", "service": "user-service"},
             {"timestamp": "2023-10-27T10:01:00Z", "level": "WARN", "message": "High latency detected for payment-gateway", "service": "checkout-service"}
         ]
         log_content_to_analyze = json.dumps(simulated_errors, indent=2)
-        print("\nSimulated Log Data for AI Analysis:")
-        print(log_content_to_analyze)
+        if not args.quiet:
+            eprint("\nSimulated Log Data for AI Analysis:")
+            eprint(log_content_to_analyze)
 
     if not log_content_to_analyze:
-        print("No log content available to analyze. Exiting.")
+        (eprint("No log content available to analyze. Exiting.") if not args.quiet
+         else print("Error: No log content available to analyze.")) # Print error to stdout if quiet
         return
 
-    # In a real scenario, you would pass your actual OpenAI API key.
-    # For this project, we are using a mock, so no key is strictly needed.
-    # It's good practice to show where it would be used.
     openai_api_key = os.getenv("OPENAI_API_KEY")
-    if not openai_api_key:
-        print("OPENAI_API_KEY environment variable not set. AI analysis will use mock without key.")
+    if not openai_api_key and not args.quiet:
+        eprint("Warning: OPENAI_API_KEY environment variable not set. AI analysis will be skipped or will fail.")
 
-    ai_suggestion = analyze_logs_with_ai(log_content_to_analyze, api_key=openai_api_key)
+    ai_suggestion = analyze_logs_with_ai(log_content_to_analyze, api_key=openai_api_key, quiet=args.quiet)
 
-    print("\n--- Final Output ---")
-    print("AI-Generated Suggestion:")
-    print(ai_suggestion)
+    if args.quiet:
+        print(ai_suggestion) # Only print the suggestion itself to stdout
+    else:
+        # If not quiet, print the full output with headers to stderr (or stdout if preferred for debugging)
+        eprint("\n--- Final Output ---")
+        eprint("AI-Generated Suggestion:")
+        eprint(ai_suggestion)
 
     # Placeholder for delivering suggestions (e.g., PR comment, Slack)
     # For now, we just print. In a GitHub Action, the workflow can capture the script's

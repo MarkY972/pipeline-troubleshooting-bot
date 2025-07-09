@@ -5,6 +5,8 @@ on: [push, pull_request]
 jobs:
   build: # This job simulates a build, test, (optional) deploy, and AI analysis pipeline
     runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write # Required to allow the action to create PR comments
     steps:
     - uses: actions/checkout@v3
 
@@ -35,42 +37,41 @@ jobs:
     - name: Analyze Logs from Simulated Failed Step
       id: ai_analysis
       if: always() # always() ensures this runs even if previous steps fail (and continue-on-error is true)
+      env:
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       run: |
         echo "--- Analyzing logs from simulated failure ---"
+        suggestion_output=""
         if [ -f simulated_error_log.txt ]; then
-          python scripts/log_parser.py --log-file simulated_error_log.txt
+          suggestion_output=$(python scripts/log_parser.py --log-file simulated_error_log.txt --quiet)
         elif [ "${{ steps.simulated_fail_step.outcome }}" == "failure" ]; then
           # In a real scenario, you might try to capture actual stdout/stderr from steps.simulated_fail_step.outputs.stdout etc.
           # For now, we'll pass a generic message if the file isn't created but the step was meant to fail.
-          python scripts/log_parser.py --log-string "Simulated failure occurred. Log content: ${{ steps.simulated_fail_step.outputs.stdout }}"
+          suggestion_output=$(python scripts/log_parser.py --log-string "Simulated failure occurred. Log content: ${{ steps.simulated_fail_step.outputs.stdout }}" --quiet)
         else
           echo "No specific error log file found from simulated_fail_step, and step did not 'fail'."
-          python scripts/log_parser.py --log-string "Simulated step completed (or no error simulated). No specific logs to analyze from it."
+          suggestion_output=$(python scripts/log_parser.py --log-string "Simulated step completed (or no error simulated). No specific logs to analyze from it." --quiet)
         fi
-        # Store suggestion as an output (example) which could be used by a subsequent step.
-        # The Python script currently prints the AI suggestion to stdout.
-        # To capture it as a step output:
-        # 1. Modify the Python script to print ONLY the suggestion to stdout at the very end,
-        #    or print a specific marker line like "AI_SUGGESTION_START" then the suggestion then "AI_SUGGESTION_END".
-        # 2. Capture it in the GHA step:
-        #    suggestion_output=$(python scripts/log_parser.py --log-file simulated_error_log.txt)
-        #    echo "suggestion=${suggestion_output}" >> $GITHUB_OUTPUT
-        #
+        echo "Captured AI suggestion output: $suggestion_output"
+        # Multiline suggestions need to be handled carefully for GITHUB_OUTPUT
+        # Using a delimiter and EOF for multiline strings
+        echo "suggestion<<EOF" >> $GITHUB_OUTPUT
+        echo "$suggestion_output" >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
         # Then, a later step could use `steps.ai_analysis.outputs.suggestion`.
 
+    - name: Post AI Suggestion to PR
+      if: github.event_name == 'pull_request' && steps.ai_analysis.outputs.suggestion != ''
+      uses: peter-evans/create-or-update-comment@v4
+      with:
+        issue-number: ${{ github.event.pull_request.number }}
+        body: |
+          **🤖 AI Troubleshooting Assistant Suggests:**
+
+          ${{ steps.ai_analysis.outputs.suggestion }}
+        # token: ${{ secrets.GITHUB_TOKEN }} # Default, not strictly needed to specify
+
     # --- Conceptual Suggestion Delivery Steps ---
-    # - name: Post AI Suggestion to PR
-    #   if: github.event_name == 'pull_request' # Only run for PRs
-    #   uses: peter-evans/create-or-update-comment@v3
-    #   with:
-    #     issue-number: ${{ github.event.pull_request.number }}
-    #     body: |
-    #       **🤖 AI Troubleshooting Assistant Suggests:**
-    #
-    #       ${{ steps.ai_analysis.outputs.suggestion }} # Assuming suggestion is set as output
-    #   env:
-    #     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # Needs pull-requests: write permission
-    #
     # - name: Send Slack Notification with AI Suggestion
     #   if: always() && env.SLACK_BOT_TOKEN != '' # always() to run even on failure, if configured
     #   uses: slackapi/slack-github-action@v1.24.0

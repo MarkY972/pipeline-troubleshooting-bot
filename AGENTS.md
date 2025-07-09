@@ -7,11 +7,12 @@ This document provides guidance for AI agents working on the Intelligent CI/CD P
 The goal of this project is to create a GitHub Action that uses an AI-powered assistant to analyze failed builds or deployments and provide intelligent suggestions or remediations.
 
 **Current State:**
-- The basic GitHub Actions workflow is set up (`.github/workflows/main.yml`).
-- A Python script (`scripts/log_parser.py`) exists to simulate log parsing and AI analysis (using a mock AI client).
+- The GitHub Actions workflow (`.github/workflows/main.yml`) is set up.
+- The Python script (`scripts/log_parser.py`) uses the **real OpenAI API** for log analysis.
+- **Automated PR commenting** of AI suggestions is implemented.
 - Terraform configurations (`terraform/`) for an EKS cluster and VPC are defined.
-- The pipeline is configured to run `terraform init`, `validate`, and `plan` but **does not deploy infrastructure**.
-- Conceptual placeholders for suggestion delivery (PR comments, Slack) are in comments.
+- The pipeline runs `terraform init`, `validate`, and `plan` but **does not deploy infrastructure**.
+- Conceptual placeholders for Slack integration remain.
 
 ## Key Files
 
@@ -30,20 +31,19 @@ The goal of this project is to create a GitHub Action that uses an AI-powered as
 
 ## Development Guidelines
 
-### 1. OpenAI Integration (Future)
-- The `scripts/log_parser.py` currently uses `MockOpenAIClient`.
-- To enable real OpenAI integration:
-    1. Install the `openai` Python library: `pip install openai`.
-    2. Replace `MockOpenAIClient` instantiation with `openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))`.
-    3. Ensure the `OPENAI_API_KEY` secret is configured in the GitHub repository and made available to the workflow.
-    4. Refine the prompts sent to the OpenAI API in `analyze_logs_with_ai` for better accuracy and more specific suggestions. Consider different prompts for different types of errors (Terraform, application, build).
+### 1. OpenAI Integration
+- **Status: Implemented.**
+- The `scripts/log_parser.py` script uses the `openai` Python library to interact with the OpenAI API (e.g., `gpt-3.5-turbo`).
+- **Crucial Setup:** An `OPENAI_API_KEY` must be configured as a GitHub secret in the repository settings (`Settings > Secrets and variables > Actions`) for the AI analysis to work. The workflow passes this key to the script.
+- **Prompts:** Initial prompts are defined in `scripts/log_parser.py`. These should be iteratively refined for better accuracy and more specific suggestions. Consider different prompts for different types of errors.
 
 ### 2. Terraform Deployment (Future - Optional)
+- **Status: Plan/Validate Only.**
 - The pipeline currently only runs `terraform plan` using the configurations in `terraform/`.
 - The Terraform code is structured using local modules (`modules/network` and `modules/eks_cluster`) called by the root module. Refer to `terraform/README.md` for details on structure and usage.
 - To enable actual deployment:
     1. **CRITICAL: Ensure AWS credentials (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION`) are securely configured as GitHub secrets.**
-    2. In `.github/workflows/main.yml`, uncomment the `env` sections for AWS credentials in `Terraform Init` and `Terraform Plan` steps.
+    2. In `.github/workflows/main.yml`, the `env` sections for AWS credentials in `Terraform Init` and `Terraform Plan` steps are currently commented out. These would need to be enabled if the plan were to interact with an actual AWS account state.
     3. Add a `Terraform Apply` step after the `Terraform Plan` step in `.github/workflows/main.yml`, ensuring it only runs on specific conditions (e.g., merges to `main` branch, manual approval).
        ```yaml
        # Example Terraform Apply step in GitHub Actions:
@@ -57,24 +57,32 @@ The goal of this project is to create a GitHub Action that uses an AI-powered as
        ```
     4. **Thoroughly test the Terraform apply process in a non-production environment first.**
 
-### 3. Suggestion Delivery (Future)
-- Conceptual comments for PR comments and Slack messages are in `scripts/log_parser.py` and `.github/workflows/main.yml`.
-- **For PR Comments:**
-    - Use an action like `peter-evans/create-or-update-comment`.
-    - Ensure the `GITHUB_TOKEN` has `pull-requests: write` permissions.
-    - The `log_parser.py` script's output needs to be captured. The GitHub Actions workflow (`.github/workflows/main.yml`) has comments on how to set step outputs (e.g., `echo "suggestion=value" >> $GITHUB_OUTPUT`) which can then be consumed by the PR comment action.
-- **For Slack Messages:**
-    - Add `slack_sdk` to `scripts/requirements.txt` and ensure it's installed in the workflow.
-    - Configure `SLACK_BOT_TOKEN` and `SLACK_CHANNEL_ID` as GitHub secrets.
-    - Implement the Slack sending logic in `log_parser.py` or a separate script.
+### 3. Suggestion Delivery
+- **PR Comments:**
+    - **Status: Implemented.**
+    - The GitHub Actions workflow (`.github/workflows/main.yml`) uses `peter-evans/create-or-update-comment@v4` to post suggestions on Pull Requests.
+    - The `log_parser.py` script (with `--quiet` flag) outputs the suggestion to `stdout`, which is captured by the workflow and passed to the commenting action.
+    - The workflow has `permissions: pull-requests: write` to allow this.
+- **Slack Messages (Future):**
+    - **Status: Not Implemented.**
+    - To implement: Add `slack_sdk` to `scripts/requirements.txt`, configure `SLACK_BOT_TOKEN` and `SLACK_CHANNEL_ID` secrets, and add logic to `log_parser.py` or a new script to send messages. Update the GHA workflow to call this.
 
 ### 4. Log Capturing in Workflow
-- The current workflow simulates log capture from a failed step by writing to `simulated_error_log.txt`.
-- For real failures:
-    - Explore capturing `stdout` and `stderr` from failed script steps directly using GitHub Actions features (e.g., `steps.<step_id>.outputs.stdout`). This can be complex for large outputs.
-    - Consider having critical scripts explicitly write their detailed logs to a file upon failure, which can then be picked up by the `log_parser.py` script.
+- The current workflow simulates log capture from a failed step by writing to `simulated_error_log.txt`. This is the current "standardized" path for failure logs.
+- For real failures from other steps:
+    - Ensure those steps output relevant logs to a known file (e.g., `failure_log.txt`) that can then be passed to `scripts/log_parser.py --log-file failure_log.txt --quiet`.
+    - Alternatively, capture `stdout`/`stderr` from failing steps as strings (if not too large) and pass using `--log-string`.
 
-### 5. Testing
+### 5. Handling Large Log Files (OpenAI API Token Limits)
+- OpenAI models have token limits (e.g., `gpt-3.5-turbo` often around 4k-16k tokens for prompt + completion). Very large logs can exceed this.
+- **Current State:** The script sends the entire log content. This may fail for large logs.
+- **Future Enhancements to Consider:**
+    - **Truncation:** Implement smart truncation in `log_parser.py` (e.g., keep first N lines, last M lines, or lines around "error" keywords). Inform the user if logs were truncated.
+    - **Summarization/Chunking:** For very large logs, split into chunks, summarize each with a cheaper/faster model or keyword extraction, then analyze the summary.
+    - **Model Selection:** Use models with larger context windows (e.g., `gpt-3.5-turbo-16k`) if necessary, but be mindful of cost.
+    - **Error Handling:** The script should gracefully handle API errors related to token limits and inform the user. (Basic API error handling is present, but specific token limit errors could be highlighted).
+
+### 6. Testing
  - **Unit Tests for Python script:** Add unit tests for `log_parser.py` functions, especially if enhancing parsing logic or AI interaction. Use `unittest` or `pytest`. Ensure any new dependencies are added to `scripts/requirements.txt`.
 - **Workflow Testing:** Test the GitHub Actions workflow by intentionally causing simulated failures or (if deployment is enabled) actual Terraform errors.
 - **AI Prompt Testing:** Iteratively test and refine the prompts sent to the (mock or real) AI to improve the quality of suggestions.
